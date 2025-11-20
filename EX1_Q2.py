@@ -8,11 +8,8 @@ lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
 
 def preprocess_text(text):
-    # 1. Tokenize and lowercase (min_len=1 to catch all words first)
     tokens = simple_preprocess(text, min_len=1)
-    # 2. Lemmatize all tokens
     lemmas = [lemmatizer.lemmatize(word) for word in tokens]
-    # 3. Filter for content words (remove stop words and filter for length >= 3)
     content_words = [word for word in lemmas if word not in stop_words and len(word) >= 3]
     return content_words
 
@@ -50,11 +47,9 @@ def sim_LESK(sense, g1, g2, sentences):
         context_window.remove(sense)
         content_context = set([word for word in context_window if word not in stop_words and len(word) >= 3])
 
-        # 6. Calculate Overlap Size (Intersection Cardinality)
         g1_overlap = len(content_context.intersection(set_g1))
         g2_overlap = len(content_context.intersection(set_g2))
 
-        # 7. Compare the sizes (CARDINALITY)
         if g1_overlap < g2_overlap:
             classifier[sen] = "g2"
         elif g2_overlap < g1_overlap:

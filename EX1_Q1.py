@@ -286,6 +286,90 @@ def generate_distance_matrix(root_synset, filename="dist_matrix.csv"):
     # 4. Return the new dictionary
     return pairwise_distances
 
+
+def compute_pairwise_path_similarity(
+        root_synset,
+        node_distances: Dict[Tuple[str, str], int],
+        wn_api
+) -> Dict[Tuple[str, str], float]:
+    """
+    Computes the path-based similarity between every unique pair of words
+    (lemmas) in the sub-tree.
+
+    Similarity is calculated as: Sim(w1, w2) = 1 / (min_distance(s1, s2) + 1),
+    where s1 and s2 are senses (synsets) of w1 and w2, and min_distance is
+    the shortest path distance between any pair of their senses.
+
+    Args:
+        root_synset (wn.Synset): The root node of the custom sub-tree.
+        node_distances (Dict[Tuple[str, str], int]): The pre-calculated
+            {('synset.name.01', 'synset2.name.01'): distance} dictionary
+            from generate_distance_matrix.
+        wn_api: The WordNet API object (e.g., wn).
+
+    Returns:
+        Dict[Tuple[str, str], float]: Dictionary of the form
+            {('word1', 'word2'): path_similarity}.
+    """
+    # 1. Gather all unique words (lemmas) in the sub-tree
+    # IMPORTANT: Ensure this function only gets words associated with
+    # the nodes present in your 'node_distances' matrix.
+    all_words: Set[str] = get_words_in_subtree(root_synset)
+    word_list = sorted(list(all_words))
+    word_pairs = list(itertools.combinations(word_list, 2))
+
+    print(f"Starting pairwise Path Similarity calculation for {len(word_list)} words.")
+
+    similarity_matrix: Dict[Tuple[str, str], float] = {}
+
+    # 2. Compute path similarity for every word pair
+    for word1, word2 in word_pairs:
+        # Find all noun synsets for each word
+        # We only consider senses that are NOUNs, matching the subtree type
+        synsets1 = wn_api.synsets(word1, wn_api.NOUN)
+        synsets2 = wn_api.synsets(word2, wn_api.NOUN)
+
+        if not synsets1 or not synsets2:
+            similarity_matrix[(word1, word2)] = 0.0
+            continue
+
+        min_distance = float('inf')
+
+        # Find the shortest distance between any sense of word1 and any sense of word2
+        for s1 in synsets1:
+            for s2 in synsets2:
+                s1_name = s1.name()
+                s2_name = s2.name()
+
+                # CRUCIAL CHECK: Ensure both senses are nodes *in the custom subtree*.
+                # We check the pre-calculated distance matrix for this.
+                if (s1_name, s2_name) in node_distances:
+                    current_dist = node_distances[(s1_name, s2_name)]
+                elif (s2_name, s1_name) in node_distances:
+                    # Account for the matrix potentially only storing one direction
+                    current_dist = node_distances[(s2_name, s1_name)]
+                else:
+                    # If the sense is a valid synset but is outside the custom subtree,
+                    # we treat the path distance as infinite/large for this sub-tree context
+                    continue
+
+                # The word similarity is based on the MINIMUM distance (most similar senses)
+                if current_dist != -1 and current_dist < min_distance:
+                    min_distance = current_dist
+
+        # 3. Convert minimum distance to similarity score
+        if min_distance != float('inf'):
+            # Standard conversion: Sim = 1 / (Distance + 1).
+            # Adding 1 prevents division by zero if distance is 0 (word1 == word2).
+            # Lower distance leads to higher similarity score.
+            path_similarity = 1.0 / (min_distance + 1.0)
+        else:
+            path_similarity = -1 # No common path found in the subtree
+
+        similarity_matrix[(word1, word2)] = path_similarity
+
+    return similarity_matrix
+
 def compute_information_content(probabilities: Dict['wn', float]) -> Dict['wn', float]:
     """
     Calculates the Information Content (IC) for each synset: IC(w) = -log(P(w)).
@@ -410,8 +494,8 @@ if __name__ == '__main__':
     print(f"Does '{root.name()}' pass? {result}")
 #
 #     # create distance matrix
-    pair_distance = generate_distance_matrix(root, filename="game_distance.csv")
-#
+    node_pair_distance = generate_distance_matrix(root, filename="distance_matrix.csv")
+    word_pair_distance = compute_pairwise_path_similarity(root, node_pair_distance, wn)
 #     # Get all words in the subtree
     # my_words = list(get_words_in_subtree(root))
     my_nodes = get_all_nodes(root)
@@ -424,3 +508,8 @@ if __name__ == '__main__':
 
     resnik_pairs = compute_pairwise_resnik_for_subtree(root, frequency_data, wn)
 
+    df = pd.read_csv('distance_matrix.csv')
+    print(df.to_string())
+    # for pair, dist in word_pair_distance.items():
+    #     if dist != 0.0:
+    #         print(f"{pair} -  dist: {dist}, resnik: {resnik_pairs[pair]}")
