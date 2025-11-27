@@ -1,69 +1,49 @@
-import os
 from typing import List, Dict, Set, Tuple
-
 import nltk
-from nltk.corpus import wordnet as wn, wordnet_ic
+from nltk.corpus import wordnet as wn
 import pandas as pd
 import math
 import itertools
+import os
 
-import pandas as pd  # Optional, but useful for large files
 
-
-def read_frequency_list(file_path):
+def read_frequency_list(file_path: str) -> Dict[str, int]:
     """Reads a .freq_list file and returns a dictionary of {word: frequency}."""
     word_frequencies = {}
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f:
-                # 1. Clean up the line (remove leading/trailing whitespace)
                 line = line.strip()
                 if not line:
                     continue
 
-                # 2. Split the line into word and frequency.
-                # Assuming the format is "word count" (separated by space or tab)
                 parts = line.split()
 
                 if len(parts) == 2:
-                    word = parts[0].lower()  # Normalize to lowercase for consistency
+                    word = parts[0].lower()
                     try:
                         frequency = int(parts[1])
                         word_frequencies[word] = frequency
                     except ValueError:
-                        # Handle cases where the frequency part is not a number
                         print(f"Skipping line with invalid frequency: {line}")
                 else:
-                    # Handle cases where the line doesn't split into two parts
                     print(f"Skipping malformed line: {line}")
 
     except FileNotFoundError:
         print(f"Error: File not found at {file_path}")
-        return None
+        return {}
 
     return word_frequencies
 
 
-
-# print(frequency_data)
-def validate_wordnet_subtree(root_synset):
+def validate_wordnet_subtree(root_synset: 'wn.Synset') -> bool:
     """
-    Checks if a WordNet subtree starting at root_synset meets two criteria:
+    Checks if a WordNet subtree starting at root_synset meets the required criteria:
     1. Has at least 20 nodes.
     2. Has at least 3 levels (Root -> Child -> Grandchild).
-
-    Args:
-        root_synset (Synset): The NLTK WordNet Synset to start from.
-
-    Returns:
-        bool: True if both conditions are met, False otherwise.
     """
-    # Use a set to track visited nodes (handles potential DAG overlaps)
-    visited = set()
-
-    # Stack for DFS traversal: (current_node, current_level)
-    # Level 1 = Root, Level 2 = Child, Level 3 = Grandchild
-    stack = [(root_synset, 1)]
+    visited: Set['wn.Synset'] = set()
+    stack: List[Tuple['wn.Synset', int]] = [(root_synset, 1)]  # (node, current_level)
 
     max_depth_found = 0
     node_count = 0
@@ -71,66 +51,44 @@ def validate_wordnet_subtree(root_synset):
     while stack:
         current_node, current_level = stack.pop()
 
-        # Skip if we've already counted this node
         if current_node in visited:
             continue
 
         visited.add(current_node)
         node_count += 1
 
-        # Update max depth found so far
-        if current_level > max_depth_found:
-            max_depth_found = current_level
+        max_depth_found = max(max_depth_found, current_level)
 
-        # --- CHECK CONDITIONS ---
-        # We need:
-        # 1. Count >= 20
-        # 2. Max Depth >= 3 (meaning we found a grandchild)
+        # Check for early exit
         if node_count >= 20 and max_depth_found >= 3:
             return True
 
-        # Add children (hyponyms) to the stack
-        # We use hyponyms() to traverse 'down' the specific/is-a hierarchy
+        # Traverse down the hierarchy using hyponyms
         for child in current_node.hyponyms():
             stack.append((child, current_level + 1))
 
-    # If the loop finishes without returning True, the conditions were not met
     print(f"Failed: Found {node_count} nodes and {max_depth_found} levels.")
     return False
 
 
-def get_words_in_subtree(root_synset):
+def get_words_in_subtree(root_synset: 'wn.Synset') -> Set[str]:
     """
     Recursively finds all unique words (lemmas) associated with the
     given root synset and all of its hyponyms (subordinates).
-
-    Args:
-        root_synset (nltk.corpus.wordnet.Synset): The top-level synset
-            (the root of the desired subtree).
-
-    Returns:
-        set: A set of unique string words found in the subtree.
     """
+    all_synsets: Set['wn.Synset'] = {root_synset}
+    all_words: Set[str] = set()
 
-    # 1. Initialize a set to store unique words and synsets
-    # Using a set automatically handles duplicates.
-    all_synsets = {root_synset}
-    all_words = set()
-
-    # 2. Use a queue for breadth-first traversal (or recursion for depth-first)
     queue = [root_synset]
 
     while queue:
         current_synset = queue.pop(0)
 
-        # Add the current synset's direct words
         for lemma_name in current_synset.lemma_names():
-            all_words.add(lemma_name.replace('_', ' '))  # Replace underscores for clean output
+            # Normalize lemma: replace underscores and make lowercase
+            all_words.add(lemma_name.replace('_', ' ').lower())
 
-        # Get the immediate children (hyponyms)
-        hyponyms = current_synset.hyponyms()
-
-        for hyponym in hyponyms:
+        for hyponym in current_synset.hyponyms():
             if hyponym not in all_synsets:
                 all_synsets.add(hyponym)
                 queue.append(hyponym)
@@ -138,17 +96,16 @@ def get_words_in_subtree(root_synset):
     return all_words
 
 
-def get_all_nodes(root_synset: 'wn') -> List['wn']:
+def get_all_nodes(root_synset: 'wn.Synset') -> List['wn.Synset']:
     """
     Helper: Returns a list of all unique Synsets (nodes) in the custom sub-tree
     defined by traversing hyponyms (is-a hierarchy) from the root.
     """
-    nodes = {root_synset}
+    nodes: Set['wn.Synset'] = {root_synset}
     queue = [root_synset]
 
     while queue:
         current = queue.pop(0)
-        # Traverse down the hierarchy using hyponyms
         for child in current.hyponyms():
             if child not in nodes:
                 nodes.add(child)
@@ -156,139 +113,100 @@ def get_all_nodes(root_synset: 'wn') -> List['wn']:
     return list(nodes)
 
 
-def compute_synset_probabilities(root_synset: 'wn', corpus_freqs: Dict[str, int]) -> Dict['wn', float]:
+def compute_synset_probabilities(root_synset: 'wn.Synset', corpus_freqs: Dict[str, int]) -> Dict['wn.Synset', float]:
     """
     Computes P(w) for every Synset w in the custom sub-tree, based ONLY on
-    frequencies of words contained within that sub-tree, as required by the exercise.
-
-    Args:
-        root_synset (wn): The root node of the custom 20+ node sub-tree.
-        corpus_freqs (Dict[str, int]): Dictionary of {lemma: frequency} from the .freq_list.
-
-    Returns:
-        Dict[wn, float]: Dictionary of {Synset: P(w)} probabilities.
+    frequencies of words contained within that sub-tree.
     """
+    all_nodes: List['wn.Synset'] = get_all_nodes(root_synset)
+    all_nodes_set = set(all_nodes)
 
-    # 1. Identify all nodes in the sub-tree to define the scope (N)
-    all_nodes: List['wn'] = get_all_nodes(root_synset)
-    all_nodes_set = set(all_nodes)  # Convert to set for O(1) membership check
-
-    # 2. Calculate the Total Corpus Count (N) for the denominator
-    # Sum frequencies of all lemmas linked to *all* nodes in the sub-tree.
+    # 1. Calculate Total Corpus Count (N) for the denominator, scoped to the sub-tree
     all_subtree_lemmas: Set[str] = set()
     for node in all_nodes:
         for lemma in node.lemma_names():
-            # Normalize lemma string to match keys in corpus_freqs
             all_subtree_lemmas.add(lemma.lower().replace('_', ' '))
 
-    total_corpus_count: int = 0
-    for lemma in all_subtree_lemmas:
-        total_corpus_count += corpus_freqs.get(lemma, 0)
+    total_corpus_count: int = sum(corpus_freqs.get(lemma, 0) for lemma in all_subtree_lemmas)
 
     if total_corpus_count == 0:
-        print("Warning: Total corpus count for the sub-tree is 0. Returning empty dict.")
+        print("Warning: Total corpus count for the sub-tree is 0.")
         return {}
 
-    # 3. Define helper to calculate freq(w) for a specific synset
-    def get_synset_frequency(synset: 'wn') -> int:
-        """Calculates freq(synset) by summing all descendant lemma frequencies in the sub-tree."""
-
-        # Use DFS/BFS starting from the current synset to find descendants in the sub-tree
-        descendant_nodes: Set['wn'] = set()
+    # 2. Helper to calculate freq(w) for a specific synset (sum of all descendant lemma freqs)
+    def get_synset_frequency(synset: 'wn.Synset') -> int:
+        descendant_nodes: Set['wn.Synset'] = set()
         stack = [synset]
+        current_freq: int = 0
 
         while stack:
             current = stack.pop()
 
-            # CRUCIAL: Only proceed if the current node is part of our custom sub-tree
-            if current in all_nodes_set:
+            # Ensure node is part of the custom sub-tree and not processed yet
+            if current in all_nodes_set and current not in descendant_nodes:
                 descendant_nodes.add(current)
 
-                # Check children (hyponyms) for the next level
+                # Sum frequencies for the lemmas in the current node
+                for lemma in current.lemma_names():
+                    current_freq += corpus_freqs.get(lemma.lower().replace('_', ' '), 0)
+
+                # Check children (hyponyms)
                 for child in current.hyponyms():
                     # Only check children that are also in our sub-tree
-                    if child in all_nodes_set and child not in descendant_nodes:
+                    if child in all_nodes_set:
                         stack.append(child)
-
-        # Sum the corpus frequencies of all lemmas belonging to these descendant nodes
-        current_freq: int = 0
-        for node in descendant_nodes:
-            for lemma in node.lemma_names():
-                current_freq += corpus_freqs.get(lemma.lower().replace('_', ' '), 0)
-
         return current_freq
 
-    # 4. Calculate freq(w) and P(w) for every node
-    synset_probabilities: Dict['wn', float] = {}
+    # 3. Calculate P(w) for every node
+    synset_probabilities: Dict['wn.Synset', float] = {}
 
     for node in all_nodes:
         freq_w = get_synset_frequency(node)
-
-        # P(w) = freq(w) / N
         p_w = freq_w / total_corpus_count
-
         synset_probabilities[node] = p_w
 
     return synset_probabilities
 
-def generate_distance_matrix(root_synset, filename="dist_matrix.csv"):
+
+def generate_distance_matrix(root_synset: 'wn.Synset', filename: str = "dist_matrix.csv") -> Dict[Tuple[str, str], int]:
     """
     Calculates the shortest path distance matrix for all nodes in the subtree
     and saves it to CSV. Returns a dictionary of pairwise distances.
     """
-    # 1. Gather all nodes in the subtree
-    print(f"Collecting nodes for subtree: {root_synset.name()}...")
     nodes = get_all_nodes(root_synset)
     node_names = [n.name() for n in nodes]
     n_count = len(nodes)
 
     print(f"Found {n_count} nodes. Calculating {n_count}x{n_count} matrix...")
 
-    # Safety check for performance
-    if n_count > 500:
-        print("Warning: Large matrix generation might be slow.")
-
-    # 2. Create the Matrix and Dictionary
-    matrix_data = []
-    # Initialize the dictionary to return
-    pairwise_distances = {}
+    matrix_data: List[List[int]] = []
+    pairwise_distances: Dict[Tuple[str, str], int] = {}
 
     for row_node in nodes:
-        row_data = []
+        row_data: List[int] = []
         name1 = row_node.name()
         for col_node in nodes:
             name2 = col_node.name()
 
-            # Calculate shortest path distance (edges between nodes)
+            # Calculate shortest path distance
             dist = row_node.shortest_path_distance(col_node)
 
-            # Handle cases where no path exists (shouldn't happen in a valid subtree)
             if dist is None:
                 dist = -1
 
-            # NEW: Add the pair and distance to the dictionary
             pairwise_distances[(name1, name2)] = dist
-
             row_data.append(dist)
         matrix_data.append(row_data)
 
-    # 3. Convert to DataFrame for display and saving
     df = pd.DataFrame(matrix_data, index=node_names, columns=node_names)
-
-    # Print to console
-    print("\n--- Distance Matrix (Preview) ---")
-    print(df.head().to_string())
-
-    # Save to CSV
     df.to_csv(filename)
-    print(f"\nSuccess! Matrix saved to '{filename}'")
+    print(f"\nSuccess! Distance Matrix saved to '{filename}'")
 
-    # 4. Return the new dictionary
     return pairwise_distances
 
 
 def compute_pairwise_path_similarity(
-        root_synset,
+        root_synset: 'wn.Synset',
         node_distances: Dict[Tuple[str, str], int],
         wn_api
 ) -> Dict[Tuple[str, str], float]:
@@ -296,24 +214,8 @@ def compute_pairwise_path_similarity(
     Computes the path-based similarity between every unique pair of words
     (lemmas) in the sub-tree.
 
-    Similarity is calculated as: Sim(w1, w2) = 1 / (min_distance(s1, s2) + 1),
-    where s1 and s2 are senses (synsets) of w1 and w2, and min_distance is
-    the shortest path distance between any pair of their senses.
-
-    Args:
-        root_synset (wn.Synset): The root node of the custom sub-tree.
-        node_distances (Dict[Tuple[str, str], int]): The pre-calculated
-            {('synset.name.01', 'synset2.name.01'): distance} dictionary
-            from generate_distance_matrix.
-        wn_api: The WordNet API object (e.g., wn).
-
-    Returns:
-        Dict[Tuple[str, str], float]: Dictionary of the form
-            {('word1', 'word2'): path_similarity}.
+    Similarity is calculated as: Sim(w1, w2) = 1 / (min_distance(s1, s2) + 1).
     """
-    # 1. Gather all unique words (lemmas) in the sub-tree
-    # IMPORTANT: Ensure this function only gets words associated with
-    # the nodes present in your 'node_distances' matrix.
     all_words: Set[str] = get_words_in_subtree(root_synset)
     word_list = sorted(list(all_words))
     word_pairs = list(itertools.combinations(word_list, 2))
@@ -321,11 +223,10 @@ def compute_pairwise_path_similarity(
     print(f"Starting pairwise Path Similarity calculation for {len(word_list)} words.")
 
     similarity_matrix: Dict[Tuple[str, str], float] = {}
+    node_names_in_matrix = set(k[0] for k in node_distances.keys())
 
-    # 2. Compute path similarity for every word pair
     for word1, word2 in word_pairs:
-        # Find all noun synsets for each word
-        # We only consider senses that are NOUNs, matching the subtree type
+        # Only consider NOUN senses
         synsets1 = wn_api.synsets(word1, wn_api.NOUN)
         synsets2 = wn_api.synsets(word2, wn_api.NOUN)
 
@@ -335,125 +236,98 @@ def compute_pairwise_path_similarity(
 
         min_distance = float('inf')
 
-        # Find the shortest distance between any sense of word1 and any sense of word2
         for s1 in synsets1:
-            for s2 in synsets2:
-                s1_name = s1.name()
-                s2_name = s2.name()
+            s1_name = s1.name()
+            # Skip sense if it's not a node in the custom sub-tree
+            if s1_name not in node_names_in_matrix:
+                continue
 
-                # CRUCIAL CHECK: Ensure both senses are nodes *in the custom subtree*.
-                # We check the pre-calculated distance matrix for this.
-                if (s1_name, s2_name) in node_distances:
-                    current_dist = node_distances[(s1_name, s2_name)]
-                elif (s2_name, s1_name) in node_distances:
-                    # Account for the matrix potentially only storing one direction
-                    current_dist = node_distances[(s2_name, s1_name)]
-                else:
-                    # If the sense is a valid synset but is outside the custom subtree,
-                    # we treat the path distance as infinite/large for this sub-tree context
+            for s2 in synsets2:
+                s2_name = s2.name()
+                if s2_name not in node_names_in_matrix:
                     continue
 
-                # The word similarity is based on the MINIMUM distance (most similar senses)
-                if current_dist != -1 and current_dist < min_distance:
-                    min_distance = current_dist
+                # Retrieve distance from the pre-calculated custom matrix
+                distance_key = (s1_name, s2_name)
+                current_dist = node_distances.get(distance_key)
 
-        # 3. Convert minimum distance to similarity score
+                if current_dist is None:
+                    # Check reverse key, matrix is symmetric but keys might be one-directional
+                    current_dist = node_distances.get((s2_name, s1_name))
+
+                if current_dist is not None and current_dist != -1:
+                    min_distance = min(min_distance, current_dist)
+
         if min_distance != float('inf'):
-            # Standard conversion: Sim = 1 / (Distance + 1).
-            # Adding 1 prevents division by zero if distance is 0 (word1 == word2).
-            # Lower distance leads to higher similarity score.
+            # Sim = 1 / (Distance + 1)
             path_similarity = 1.0 / (min_distance + 1.0)
         else:
-            path_similarity = -1 # No common path found in the subtree
+            path_similarity = 0.0  # No common path found in the subtree
 
         similarity_matrix[(word1, word2)] = path_similarity
 
     return similarity_matrix
 
-def compute_information_content(probabilities: Dict['wn', float]) -> Dict['wn', float]:
+
+def compute_information_content(probabilities: Dict['wn.Synset', float]) -> Dict['wn.Synset', float]:
     """
     Calculates the Information Content (IC) for each synset: IC(w) = -log(P(w)).
-
-    Args:
-        probabilities (Dict[wn.Synset, float]): Dictionary of {Synset: P(w)}.
-
-    Returns:
-        Dict[wn.Synset, float]: Dictionary of {Synset: IC(w)}.
     """
     ic_scores = {}
     for synset, p_w in probabilities.items():
         if p_w > 0:
             ic_scores[synset] = -math.log(p_w)
         else:
-            # Assigning infinity if P(w) is 0 (word was never observed)
             ic_scores[synset] = float('inf')
     return ic_scores
 
 
 def compute_resnik_similarity(
-        synset1: 'nltk.corpus.wordnet.Synset',
-        synset2: 'nltk.corpus.wordnet.Synset',
-        ic_scores: Dict['nltk.corpus.wordnet.Synset', float],
-        wn_api  # Pass in the WordNet API (e.g., nltk.corpus.wordnet as wn)
+        synset1: 'wn.Synset',
+        synset2: 'wn.Synset',
+        ic_scores: Dict['wn.Synset', float],
+        wn_api
 ) -> float:
-    # ... (omitted docstring)
+    """
+    Computes Resnik similarity between two Synsets: Sim_resnik(s1, s2) = IC(LCS(s1, s2)).
+    Uses custom IC scores constrained to the sub-tree.
+    """
     try:
-        # FIX: Replaced non-existent lowest_common_subsumer with lowest_common_hypernyms
-        # The correct method returns a list, so we take the first element.
+        # Use lowest_common_hypernyms to find the LCS
         lcs_list = synset1.lowest_common_hypernyms(synset2)
 
         if not lcs_list:
-            # If no common hypernyms are found
             return 0.0
 
-        # The LCS is the first element of the list of lowest common hypernyms
         lcs = lcs_list[0]
 
         # Resnik similarity is the IC of the LCS
-        # CRUCIAL: Check if the LCS is in our *custom* IC scores
+        # CRUCIAL: Check if the LCS is in our *custom* IC scores (i.e., in the sub-tree)
         if lcs in ic_scores:
-            similarity = ic_scores[lcs]
-            return similarity
+            return ic_scores[lcs]
         else:
-            # If LCS is outside the custom sub-tree, similarity based on custom IC is 0.
+            # If LCS is outside the custom sub-tree, similarity is 0.
             return 0.0
 
     except Exception:
-        # Catch exceptions (e.g., if synsets are incompatible or error in traversal)
         return 0.0
 
 
-# --- 5. Function to Compute Pairwise Resnik Similarity for the Entire Sub-Tree ---
-
 def compute_pairwise_resnik_for_subtree(
-        root_synset: 'nltk.corpus.wordnet.Synset',
+        root_synset: 'wn.Synset',
         corpus_freqs: Dict[str, int],
         wn_api
 ) -> Dict[Tuple[str, str], float]:
     """
     Computes the maximum Resnik similarity between every unique pair of words
     associated with the nodes in the custom WordNet sub-tree.
-
-    Args:
-        root_synset (wn.Synset): The root node of the custom sub-tree.
-        corpus_freqs (Dict[str, int]): Dictionary of {lemma: frequency} from the .freq_list.
-        wn_api: The WordNet API object (e.g., wn).
-
-    Returns:
-        Dict[Tuple[str, str], float]: Dictionary of the form {('word1', 'word2'): max_resnik_sim}.
     """
-
-    # Step 1: Compute custom Information Content (IC) for all nodes
+    # 1. Compute custom Information Content (IC) for all nodes
     probabilities = compute_synset_probabilities(root_synset, corpus_freqs)
     ic_scores = compute_information_content(probabilities)
 
-    # Step 2: Gather all unique words (lemmas) in the sub-tree
-    all_nodes = get_all_nodes(root_synset)
-    all_words: Set[str] = set()
-    for node in all_nodes:
-        for lemma in node.lemma_names():
-            all_words.add(lemma.lower().replace('_', ' '))
-
+    # 2. Gather all unique words (lemmas) in the sub-tree
+    all_words: Set[str] = get_words_in_subtree(root_synset)
     word_list = sorted(list(all_words))
     word_pairs = list(itertools.combinations(word_list, 2))
 
@@ -461,7 +335,7 @@ def compute_pairwise_resnik_for_subtree(
 
     similarity_matrix: Dict[Tuple[str, str], float] = {}
 
-    # Step 3: Compute max similarity for every word pair
+    # 3. Compute max similarity for every word pair
     for word1, word2 in word_pairs:
         # Find all noun synsets for each word
         synsets1 = wn_api.synsets(word1, wn_api.NOUN)
@@ -473,43 +347,55 @@ def compute_pairwise_resnik_for_subtree(
 
         max_similarity = 0.0
 
-        # Resnik similarity between *words* is the maximum similarity between any pair of their *senses*
+        # Resnik similarity is the maximum IC(LCS) over all sense pairs
         for s1 in synsets1:
             for s2 in synsets2:
-                # Use the custom synset-level similarity function
                 similarity = compute_resnik_similarity(s1, s2, ic_scores, wn_api)
-
-                if similarity > max_similarity:
-                    max_similarity = similarity
+                max_similarity = max(max_similarity, similarity)
 
         similarity_matrix[(word1, word2)] = max_similarity
 
     return similarity_matrix
-#
-#
+
+
 if __name__ == '__main__':
-    # validate root selected is good
-    root = wn.synset('road.n.01')
-    result = validate_wordnet_subtree(root)
-    print(f"Does '{root.name()}' pass? {result}")
-#
-#     # create distance matrix
-    node_pair_distance = generate_distance_matrix(root, filename="distance_matrix.csv")
-    word_pair_distance = compute_pairwise_path_similarity(root, node_pair_distance, wn)
-#     # Get all words in the subtree
-    # my_words = list(get_words_in_subtree(root))
-    my_nodes = get_all_nodes(root)
-    # Example usage (assuming the file is named 'corpus_ex1.freq_list')
-    frequency_data = read_frequency_list('corpus_ex1.freq_list')
-#
-    probabilities = compute_synset_probabilities(root, frequency_data)
+    # Define the root of the custom WordNet sub-tree
+    ROOT_SYNSET = wn.synset('road.n.01')
+    FREQ_FILE = 'corpus_ex1.freq_list'
 
-    ic_scores = compute_information_content(probabilities)
+    # 1. Validate the selected sub-tree
+    result = validate_wordnet_subtree(ROOT_SYNSET)
+    print(f"Does '{ROOT_SYNSET.name()}' pass criteria (>=20 nodes, >=3 levels)? {result}")
 
-    resnik_pairs = compute_pairwise_resnik_for_subtree(root, frequency_data, wn)
+    # 2. Compute Distance Matrix and Path Similarity
+    node_pair_distance = generate_distance_matrix(ROOT_SYNSET, filename="distance_matrix.csv")
+    word_pair_path_sim = compute_pairwise_path_similarity(ROOT_SYNSET, node_pair_distance, wn)
 
-    df = pd.read_csv('distance_matrix.csv')
-    print(df.to_string())
-    # for pair, dist in word_pair_distance.items():
-    #     if dist != 0.0:
-    #         print(f"{pair} -  dist: {dist}, resnik: {resnik_pairs[pair]}")
+    # 3. Compute Resnik Similarity
+    frequency_data = read_frequency_list(FREQ_FILE)
+    word_pair_resnik_sim = compute_pairwise_resnik_for_subtree(ROOT_SYNSET, frequency_data, wn)
+
+    # 4. Display Results (Preview Distance Matrix)
+    if os.path.exists('distance_matrix.csv'):
+        df = pd.read_csv('distance_matrix.csv')
+        print("\n--- Full Distance Matrix (First 5 Rows) ---")
+        print(df.head().to_string())
+
+    print("\n--- Example Similarity Results ---")
+
+    # Example pairs from the solution document
+    example_pairs = [
+        ('bypath', 'road'),
+        ('byway', 'road'),
+        ('cartroad', 'road'),
+        ('alley', 'road'),
+        ('roadway', 'route')
+    ]
+
+    for pair in example_pairs:
+        w1, w2 = pair
+        # Find the similarity regardless of key order
+        path_sim = word_pair_path_sim.get(pair) or word_pair_path_sim.get((w2, w1), 0.0)
+        resnik_sim = word_pair_resnik_sim.get(pair) or word_pair_resnik_sim.get((w2, w1), 0.0)
+
+        print(f"Pair: {pair} | Path Sim: {path_sim:.4f} | Resnik Sim: {resnik_sim:.4f}")
